@@ -1,0 +1,327 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>PhishGuard — URL Safety Checker</title>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<style>
+,::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+  --bg:#07090f;--surface:#0d1220;--surface2:#111827;
+  --border:#1c2a42;--border2:#243354;
+  --text:#c9d5ee;--muted:#445270;
+  --accent:#3b82f6;--ag:rgba(59,130,246,0.15);
+  --danger:#f43f5e;--dl:rgba(244,63,94,0.10);
+  --safe:#10b981;--sl:rgba(16,185,129,0.10);
+  --mono:'JetBrains Mono',monospace;
+}
+body{
+  font-family:'Inter',sans-serif;background:var(--bg);color:var(--text);
+  min-height:100vh;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;padding:32px 16px;overflow-x:hidden;
+}
+.bg-fx{
+  position:fixed;inset:0;pointer-events:none;z-index:0;
+  background:
+    radial-gradient(ellipse 80% 50% at 50% -10%,rgba(59,130,246,0.07) 0%,transparent 60%),
+    radial-gradient(ellipse 40% 40% at 85% 90%,rgba(16,185,129,0.04) 0%,transparent 60%);
+}
+.bg-grid{
+  position:fixed;inset:0;pointer-events:none;z-index:0;
+  background-image:
+    linear-gradient(rgba(59,130,246,0.025) 1px,transparent 1px),
+    linear-gradient(90deg,rgba(59,130,246,0.025) 1px,transparent 1px);
+  background-size:48px 48px;
+}
+.scanline{
+  position:fixed;top:-4px;left:0;right:0;height:3px;opacity:0;z-index:100;
+  background:linear-gradient(90deg,transparent,var(--accent),transparent);
+}
+.scanline.on{opacity:1;animation:sweep 1.1s linear infinite;}
+@keyframes sweep{from{top:-4px}to{top:100vh}}
+.page{position:relative;z-index:1;width:100%;max-width:660px;display:flex;flex-direction:column;gap:24px;}
+.hd{text-align:center;padding:4px 0;}
+.shield{
+  display:inline-flex;align-items:center;justify-content:center;
+  width:82px;height:82px;border-radius:50%;
+  background:radial-gradient(circle,rgba(59,130,246,0.14) 0%,transparent 70%);
+  border:1px solid rgba(59,130,246,0.22);margin-bottom:20px;position:relative;
+}
+.shield::after{
+  content:'';position:absolute;inset:-9px;border-radius:50%;
+  border:1px solid rgba(59,130,246,0.07);
+  animation:ping 3.2s ease-in-out infinite;
+}
+@keyframes ping{0%,100%{transform:scale(1);opacity:.5}50%{transform:scale(1.14);opacity:0}}
+.eyebrow{font-family:var(--mono);font-size:.64rem;letter-spacing:.2em;text-transform:uppercase;color:var(--accent);margin-bottom:10px;}
+h1{font-size:clamp(1.55rem,4vw,2rem);font-weight:700;color:#dde6f8;letter-spacing:-.024em;line-height:1.2;margin-bottom:10px;}
+.sub{font-size:.875rem;color:var(--muted);line-height:1.65;max-width:440px;margin:0 auto;}
+.card{
+  background:var(--surface);border:1px solid var(--border);border-radius:24px;
+  padding:36px 32px;
+  box-shadow:0 40px 80px rgba(0,0,0,.55),inset 0 1px 0 rgba(255,255,255,.03);
+}
+.field-lbl{
+  font-family:var(--mono);font-size:.66rem;letter-spacing:.14em;text-transform:uppercase;
+  color:var(--muted);margin-bottom:10px;display:flex;align-items:center;gap:6px;
+}
+.field-lbl::before{content:'';width:6px;height:6px;border-radius:50%;background:var(--accent);display:inline-block;}
+.input-row{display:flex;gap:10px;margin-bottom:10px;}
+.input-wrap{flex:1;position:relative;}
+.input-wrap svg{position:absolute;left:13px;top:50%;transform:translateY(-50%);width:16px;height:16px;color:var(--muted);pointer-events:none;}
+input[type=text]{
+  width:100%;padding:13px 14px 13px 42px;
+  background:var(--bg);border:1px solid var(--border2);border-radius:14px;
+  color:#e2eaf8;font-family:var(--mono);font-size:.83rem;outline:none;
+  transition:border-color .2s,box-shadow .2s;
+}
+input:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--ag);}
+input::placeholder{color:var(--muted);}
+input.shake{animation:shk .4s ease;}
+@keyframes shk{0%,100%{transform:translateX(0)}20%{transform:translateX(-7px)}40%{transform:translateX(7px)}60%{transform:translateX(-4px)}80%{transform:translateX(4px)}}
+.btn{
+  display:flex;align-items:center;gap:8px;padding:13px 22px;
+  background:var(--accent);color:#fff;border:none;border-radius:14px;
+  font-size:.875rem;font-weight:600;cursor:pointer;white-space:nowrap;
+  box-shadow:0 4px 20px rgba(59,130,246,.35);
+  transition:background .2s,transform .1s,box-shadow .2s;
+}
+.btn:hover{background:#5093f7;box-shadow:0 6px 24px rgba(59,130,246,.45);}
+.btn:active{transform:scale(.96);}
+.btn:disabled{background:var(--border2);box-shadow:none;cursor:not-allowed;transform:none;}
+.btn svg{width:16px;height:16px;}
+.hint{font-size:.72rem;color:var(--muted);}
+.divider{height:1px;background:var(--border);margin:28px 0;}
+.loading{display:none;flex-direction:column;align-items:center;gap:18px;padding:20px 0;}
+.dots{display:flex;gap:7px;}
+.dot{width:8px;height:8px;border-radius:50%;background:var(--accent);opacity:.25;animation:bl 1.2s ease-in-out infinite;}
+.dot:nth-child(2){animation-delay:.2s;}.dot:nth-child(3){animation-delay:.4s;}
+@keyframes bl{0%,100%{opacity:.2;transform:scale(.8)}50%{opacity:1;transform:scale(1)}}
+.steps{display:flex;flex-direction:column;gap:7px;width:100%;}
+.step{
+  display:flex;align-items:center;gap:10px;
+  font-family:var(--mono);font-size:.71rem;color:var(--muted);
+  padding:7px 11px;border-radius:9px;transition:color .3s,background .3s;
+}
+.step.active{color:var(--accent);background:var(--ag);}
+.step.done{color:var(--safe);}
+.step-dot{width:6px;height:6px;border-radius:50%;background:currentColor;flex-shrink:0;}
+#result{display:none;animation:rise .35s ease;}
+@keyframes rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:translateY(0)}}
+.verdict{display:flex;align-items:center;gap:16px;padding:18px;border-radius:16px;margin-bottom:20px;}
+.verdict.danger{background:var(--dl);border:1px solid rgba(244,63,94,.22);}
+.verdict.safe  {background:var(--sl);border:1px solid rgba(16,185,129,.22);}
+.verdict.err   {background:rgba(255,255,255,.03);border:1px solid var(--border2);}
+.v-icon{width:52px;height:52px;border-radius:14px;display:flex;align-items:center;justify-content:center;font-size:24px;flex-shrink:0;}
+.verdict.danger .v-icon{background:rgba(244,63,94,.15);}
+.verdict.safe   .v-icon{background:rgba(16,185,129,.15);}
+.verdict.err    .v-icon{background:rgba(255,255,255,.05);}
+.v-text strong{display:block;font-size:1.05rem;font-weight:700;color:#dde6f8;margin-bottom:3px;}
+.v-text span{font-size:.78rem;color:var(--muted);line-height:1.55;}
+.url-chip{
+  font-family:var(--mono);font-size:.72rem;color:var(--muted);
+  background:var(--bg);border:1px solid var(--border);border-radius:10px;
+  padding:9px 13px;word-break:break-all;margin-bottom:22px;line-height:1.6;
+}
+.bars{display:flex;flex-direction:column;gap:14px;margin-bottom:22px;}
+.bar-head{display:flex;justify-content:space-between;align-items:baseline;margin-bottom:5px;}
+.bar-name{font-size:.78rem;color:var(--muted);}
+.bar-pct{font-family:var(--mono);font-size:.8rem;font-weight:600;}
+.bar-pct.d{color:var(--danger);}.bar-pct.s{color:var(--safe);}
+.bar-track{height:6px;background:var(--border);border-radius:99px;overflow:hidden;}
+.bar-fill{height:100%;border-radius:99px;width:0%;transition:width .9s cubic-bezier(.4,0,.2,1);}
+.bar-fill.d{background:linear-gradient(90deg,#9f1239,var(--danger));}
+.bar-fill.s{background:linear-gradient(90deg,#065f46,var(--safe));}
+.gauge-card{background:var(--bg);border:1px solid var(--border);border-radius:14px;padding:18px 20px;}
+.gauge-eye{font-family:var(--mono);font-size:.64rem;letter-spacing:.12em;text-transform:uppercase;color:var(--muted);margin-bottom:12px;}
+.gauge-track{position:relative;height:10px;border-radius:99px;
+  background:linear-gradient(90deg,#10b981 0%,#fbbf24 50%,#f43f5e 100%);margin-bottom:8px;}
+.gauge-needle{
+  position:absolute;top:50%;transform:translate(-50%,-50%);
+  width:20px;height:20px;background:#f1f5fb;
+  border:3px solid var(--bg);border-radius:50%;
+  box-shadow:0 2px 10px rgba(0,0,0,.6);
+  transition:left .9s cubic-bezier(.4,0,.2,1);left:0%;
+}
+.gauge-labels{display:flex;justify-content:space-between;font-family:var(--mono);font-size:.64rem;color:var(--muted);}
+.badge-row{text-align:center;margin-top:20px;}
+.badge{
+  display:inline-flex;align-items:center;gap:6px;padding:5px 12px;
+  background:rgba(59,130,246,.08);border:1px solid rgba(59,130,246,.15);
+  border-radius:99px;font-family:var(--mono);font-size:.67rem;color:var(--accent);
+}
+.stats{display:grid;grid-template-columns:repeat(3,1fr);gap:12px;}
+.stat{background:var(--surface2);border:1px solid var(--border);border-radius:14px;padding:16px;text-align:center;}
+.stat-v{font-family:var(--mono);font-size:1.1rem;font-weight:600;color:#dde6f8;margin-bottom:4px;}
+.stat-l{font-size:.68rem;color:var(--muted);}
+footer{text-align:center;font-size:.7rem;color:var(--muted);line-height:1.9;}
+@media(max-width:500px){
+  .card{padding:24px 18px;}
+  .input-row{flex-direction:column;}
+  .btn{justify-content:center;}
+  .stats{grid-template-columns:1fr 1fr;}
+}
+</style>
+</head>
+<body>
+<div class="bg-fx"></div>
+<div class="bg-grid"></div>
+<div class="scanline" id="sl"></div>
+<div class="page">
+  <div class="hd">
+    <div class="shield">
+      <svg width="36" height="36" viewBox="0 0 24 24" fill="none" stroke="#3b82f6" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M12 22s8-4 8-10V5l-8-3-8 3v7c0 6 8 10 8 10z"/>
+        <polyline points="9 12 11 14 15 10"/>
+      </svg>
+    </div>
+    <p class="eyebrow">ML Security Tool</p>
+    <h1>Phishing URL Detector</h1>
+    <p class="sub">Paste any link — the model analyses all 111 features including live DNS, WHOIS &amp; TLS to determine if it's safe.</p>
+  </div>
+  <div class="card">
+    <p class="field-lbl">URL to scan</p>
+    <div class="input-row">
+      <div class="input-wrap">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 13a5 5 0 0 0 7.54.54l3-3a5 5 0 0 0-7.07-7.07l-1.72 1.71"/>
+          <path d="M14 11a5 5 0 0 0-7.54-.54l-3 3a5 5 0 0 0 7.07 7.07l1.71-1.71"/>
+        </svg>
+        <input type="text" id="urlInput" placeholder="https://example.com/login" autocomplete="off" spellcheck="false"/>
+      </div>
+      <button class="btn" id="scanBtn" onclick="doScan()">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round">
+          <circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/>
+        </svg>
+        Scan URL
+      </button>
+    </div>
+    <p class="hint">Press Enter to scan &mdash; works with or without https://</p>
+    <div class="divider"></div>
+    <div class="loading" id="loading">
+      <div class="dots"><div class="dot"></div><div class="dot"></div><div class="dot"></div></div>
+      <div class="steps">
+        <div class="step" id="s1"><div class="step-dot"></div>Parsing URL structure &amp; segments&hellip;</div>
+        <div class="step" id="s2"><div class="step-dot"></div>Running DNS &amp; WHOIS lookups&hellip;</div>
+        <div class="step" id="s3"><div class="step-dot"></div>Checking TLS certificate &amp; redirects&hellip;</div>
+        <div class="step" id="s4"><div class="step-dot"></div>Running ML model prediction&hellip;</div>
+      </div>
+    </div>
+    <div id="result"></div>
+    <div class="badge-row">
+      <span class="badge">
+        <svg width="10" height="10" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5">
+          <circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/>
+        </svg>
+        Active model: {{ model_name }}
+      </span>
+    </div>
+  </div>
+  <div class="stats">
+    <div class="stat"><div class="stat-v">111</div><div class="stat-l">Features extracted</div></div>
+    <div class="stat"><div class="stat-v">DNS</div><div class="stat-l">Live network checks</div></div>
+    <div class="stat"><div class="stat-v">{{ model_name.split()[0] }}</div><div class="stat-l">ML model active</div></div>
+  </div>
+  <footer>
+    Phishing Website Detection Project<br>
+    Hamid Hussain Hurrah &middot; Junaid Quayoom Shah &middot; Aaqib Arshid Rather
+  </footer>
+</div>
+<script>
+const $=id=>document.getElementById(id);
+$("urlInput").addEventListener("keydown",e=>{if(e.key==="Enter")doScan();});
+let stepTimer=null;
+function startSteps(){
+  ["s1","s2","s3","s4"].forEach(s=>$(s).className="step");
+  $("s1").className="step active";
+  let i=0;const ids=["s1","s2","s3","s4"];
+  stepTimer=setInterval(()=>{
+    if(i<ids.length-1){$(ids[i]).className="step done";i++;$(ids[i]).className="step active";}
+  },1800);
+}
+function stopSteps(){
+  clearInterval(stepTimer);
+  ["s1","s2","s3","s4"].forEach(s=>$(s).className="step done");
+}
+async function doScan(){
+  const url=$("urlInput").value.trim();
+  if(!url){shake($("urlInput"));return;}
+  $("result").style.display="none";
+  $("loading").style.display="flex";
+  $("scanBtn").disabled=true;
+  $("sl").className="scanline on";
+  startSteps();
+  const fd=new FormData();fd.append("url",url);
+  try{
+    const res=await fetch("/predict",{method:"POST",body:fd});
+    const data=await res.json();
+    stopSteps();
+    $("loading").style.display="none";
+    $("sl").className="scanline";
+    $("scanBtn").disabled=false;
+    $("result").style.display="block";
+    if(data.status==="error"){$("result").innerHTML=errHTML(data.message);return;}
+    const isPhish=data.prediction==="Phishing";
+    $("result").innerHTML=resultHTML(data,isPhish);
+    requestAnimationFrame(()=>{
+      document.querySelectorAll(".bar-fill").forEach(el=>el.style.width=el.dataset.w+"%");
+      const n=document.querySelector(".gauge-needle");
+      if(n)n.style.left=n.dataset.pos;
+    });
+  }catch(e){
+    stopSteps();
+    $("loading").style.display="none";
+    $("sl").className="scanline";
+    $("scanBtn").disabled=false;
+    $("result").style.display="block";
+    $("result").innerHTML=errHTML("Cannot reach server. Make sure Flask is running on port 5000.");
+  }
+}
+function resultHTML(data,isPhish){
+  const cls=isPhish?"danger":"safe";
+  const icon=isPhish?"🚨":"✅";
+  const head=isPhish?"Phishing Detected":"Looks Legitimate";
+  const body=isPhish
+    ?"This URL shows phishing indicators. Do not visit or enter any credentials."
+    :"No phishing signals detected. This URL appears safe to visit.";
+  const pp=data.phishing_probability;
+  const lp=data.legitimate_probability;
+  return `
+    <div class="verdict ${cls}">
+      <div class="v-icon">${icon}</div>
+      <div class="v-text"><strong>${head}</strong><span>${body}</span></div>
+    </div>
+    <div class="url-chip">${esc(data.url)}</div>
+    <div class="bars">
+      <div>
+        <div class="bar-head"><span class="bar-name">Phishing probability</span><span class="bar-pct d">${pp}%</span></div>
+        <div class="bar-track"><div class="bar-fill d" data-w="${pp}" style="width:0%"></div></div>
+      </div>
+      <div>
+        <div class="bar-head"><span class="bar-name">Legitimate probability</span><span class="bar-pct s">${lp}%</span></div>
+        <div class="bar-track"><div class="bar-fill s" data-w="${lp}" style="width:0%"></div></div>
+      </div>
+    </div>
+    <div class="gauge-card">
+      <div class="gauge-eye">Risk level</div>
+      <div class="gauge-track">
+        <div class="gauge-needle" data-pos="${pp}%" style="left:0%"></div>
+      </div>
+      <div class="gauge-labels"><span>Safe</span><span>Moderate</span><span>High Risk</span></div>
+    </div>`;
+}
+function errHTML(msg){
+  return `<div class="verdict err">
+    <div class="v-icon">⚠️</div>
+    <div class="v-text"><strong>Something went wrong</strong><span>${esc(msg)}</span></div>
+  </div>`;
+}
+function esc(s){return s.replace(/&/g,"&amp;").replace(/</g,"&lt;").replace(/>/g,"&gt;");}
+function shake(el){
+  el.classList.remove("shake");void el.offsetWidth;el.classList.add("shake");
+  el.addEventListener("animationend",()=>el.classList.remove("shake"),{once:true});
+}
+</script>
+</body>
+</html>
