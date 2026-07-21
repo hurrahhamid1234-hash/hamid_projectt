@@ -1,3 +1,4 @@
+
 """
 ============================================================
 Phishing Website Detection — Flask App
@@ -71,6 +72,215 @@ URL_SHORTENERS = {
     "lnkd.in","rb.gy","cutt.ly","shorturl.at","tiny.cc",
     "qr.ae","bc.vc","snipurl.com","ff.im","twit.ac","x.co",
 }
+
+# ── Brand-impersonation / typosquat detection ─────────────
+# The trained ML model only ever saw lexical counts + network
+# stats — it was never given the URL text itself, so it has
+# no way to recognise "g00gle.com" or "paypal-login-secure.net"
+# as impersonation attempts. This layer catches that class of
+# attack independently and overrides the model when it fires.
+
+BRANDS = [
+    "google","paypal","amazon","microsoft","apple","facebook",
+    "instagram","netflix","bankofamerica","wellsfargo","chase",
+    "citibank","hsbc","linkedin","ebay","twitter","whatsapp",
+    "dropbox","adobe","yahoo","outlook","icloud","gmail",
+]
+
+SENSITIVE_KEYWORDS = [
+    "login","signin","sign-in","secure","security","account",
+    "verify","verification","update","confirm","password",
+    "wallet","billing","bank","pay","credential","suspend",
+]
+
+LEET_MAP = str.maketrans({
+    "0": "o", "1": "l", "!": "i", "3": "e",
+    "4": "a", "5": "s", "7": "t", "$": "s", "@": "a",
+})
+
+# ── Brand-impersonation / typosquat detection ─────────────
+# The trained ML model only ever saw lexical counts + network
+# stats — it was never given the URL text itself, so it has
+# no way to recognise "g00gle.com", "rnicrosoft.com", or
+# "paypal-login-secure.net" as impersonation attempts. This
+# layer catches that class of attack independently and blends
+# a weighted risk score into the model's verdict.
+
+BRANDS = [
+    "google","paypal","amazon","microsoft","apple","facebook",
+    "instagram","netflix","bankofamerica","wellsfargo","chase",
+    "citibank","hsbc","linkedin","ebay","twitter","whatsapp",
+    "dropbox","adobe","yahoo","outlook","icloud","gmail",
+]
+
+SENSITIVE_KEYWORDS = [
+    "login","signin","sign-in","secure","security","account",
+    "verify","verification","update","confirm","password",
+    "wallet","billing","bank","pay","credential","suspend",
+]
+
+# Domain suffixes that take TWO labels to form the real root
+# (google.co.uk -> root is "google.co.uk", not "co.uk").
+# Not exhaustive, but covers the common cases.
+MULTI_PART_TLDS = {
+    "co.uk","org.uk","gov.uk","ac.uk","co.in","co.jp","co.kr",
+    "com.au","net.au","org.au","com.br","com.mx","co.za",
+    "com.sg","com.hk","co.nz",
+}
+
+# Digit / symbol leetspeak
+LEET_MAP = str.maketrans({
+    "0": "o", "1": "l", "!": "i", "3": "e",
+    "4": "a", "5": "s", "7": "t", "$": "s", "@": "a",
+})
+
+# Multi-character visual tricks (checked as substring replacements,
+# applied before the single-char leet map)
+HOMOGLYPH_PAIRS = [
+    ("rn", "m"), ("vv", "w"), ("cl", "d"), ("ii", "u"),
+    ("nn", "m"), ("l1", "ll"),
+]
+
+# Cyrillic / Greek characters that render near-identically to Latin
+# letters — classic IDN-homograph phishing trick.
+UNICODE_HOMOGLYPHS = str.maketrans({
+    "а": "a", "е": "e", "о": "o", "р": "p", "с": "c",
+    "х": "x", "у": "y", "і": "i", "ѕ": "s", "ԁ": "d",
+    "ɡ": "g", "ⅼ": "l", "α": "a", "ο": "o", "ρ": "p",
+})
+
+def _has_non_ascii(s):
+    return any(ord(ch) > 127 for ch in s)
+
+def _visual_normalize(s):
+    """Collapse leetspeak, multi-char visual tricks, and unicode
+    homoglyphs down to a plain-ASCII 'what a human would read' form."""
+    s = s.lower().translate(UNICODE_HOMOGLYPHS)
+    for pair, repl in HOMOGLYPH_PAIRS:
+        s = s.replace(pair, repl)
+    return s.translate(LEET_MAP)
+
+def _levenshtein(a, b):
+    if a == b:
+        return 0
+    if not a:
+        return len(b)
+    if not b:
+        return len(a)
+    prev = list(range(len(b) + 1))
+    for i, ca in enumerate(a, 1):
+        cur = [i] + [0] * len(b)
+        for j, cb in enumerate(b, 1):
+            cur[j] = min(prev[j] + 1,
+                         cur[j - 1] + 1,
+                         prev[j - 1] + (ca != cb))
+        prev = cur
+    return prev[-1]
+
+def _split_root(dom_lower):
+    """Best-effort root-domain extraction, aware of common
+    two-label TLDs like co.uk so 'google.co.uk' isn't split wrong."""
+    labels = dom_lower.split(".")
+    if len(labels) >= 3 and ".".join(labels[-2:]) in MULTI_PART_TLDS:
+        return ".".join(labels[-3:]), labels[-3]
+    if len(labels) >= 2:
+        return ".".join(labels[-2:]), labels[-2]
+    return dom_lower, dom_lower
+
+def _decode_punycode_domain(dom_lower):
+    """Decode any xn-- labels to their real unicode form so IDN
+    homograph tricks (e.g. xn--ggle-0nda.com -> gòogle.com) can be
+    compared against brand names, not just flagged blindly."""
+    out_labels = []
+    changed = False
+    for label in dom_lower.split("."):
+        if label.startswith("xn--"):
+            try:
+                out_labels.append(label[4:].encode("ascii").decode("punycode"))
+                changed = True
+                continue
+            except Exception:
+                pass
+        out_labels.append(label)
+    return ".".join(out_labels), changed
+
+def brand_impersonation_check(raw_url, domain):
+    """
+    Returns a risk assessment dict:
+      typosquat           -> leetspeak/near-miss of a known brand
+      homoglyph            -> visual-trick or unicode/punycode lookalike
+      brand_in_subdomain  -> brand present in URL but not the real root
+      punycode             -> domain uses IDN/punycode encoding (xn--)
+      keyword_count        -> count of sensitive words in the URL
+      matched_brand         -> which brand it resembles, if any
+      risk_score            -> 0.0-1.0 weighted combination of the above
+    """
+    flags = {
+        "typosquat": False,
+        "homoglyph": False,
+        "brand_in_subdomain": False,
+        "punycode": False,
+        "keyword_count": 0,
+        "matched_brand": None,
+        "risk_score": 0.0,
+    }
+
+    dom_lower = domain.lower()
+
+    if "xn--" in dom_lower:
+        flags["punycode"] = True
+        decoded, _ = _decode_punycode_domain(dom_lower)
+        dom_lower = decoded  # compare the real (decoded) text from here on
+
+    root_domain, main_label = _split_root(dom_lower)
+
+    # A domain is only "the real thing" if its actual root label is the
+    # brand itself (any TLD: .com, .co.uk, .de, ...) — TLD doesn't matter.
+    if main_label in BRANDS:
+        return flags  # legitimate root domain (e.g. google.co.uk) — skip entirely
+
+    unicode_trick = _has_non_ascii(domain) or flags["punycode"]
+    normalized_main = _visual_normalize(main_label)
+    dom_normalized  = _visual_normalize(dom_lower)
+
+    for brand in BRANDS:
+        if main_label == brand:
+            continue  # legitimate root domain under any TLD — never flag it
+
+        # dist==0 catches exact tricks (g00gle/rnicrosoft -> google/microsoft);
+        # dist 1-2 catches near-misses (googel, gogle, paypaI, etc.)
+        dist = _levenshtein(normalized_main, brand)
+        if dist <= 2 and abs(len(normalized_main) - len(brand)) <= 2:
+            if dist == 0:
+                # Perfect match only after visual normalization —
+                # i.e. the raw text used a trick, not real letters.
+                flags["homoglyph" if unicode_trick else "typosquat"] = True
+            else:
+                flags["typosquat"] = True
+            flags["matched_brand"] = brand
+
+        if ((brand in dom_lower or brand in dom_normalized)
+                and main_label != brand):
+            flags["brand_in_subdomain"] = True
+            flags["matched_brand"] = flags["matched_brand"] or brand
+
+    flags["keyword_count"] = sum(
+        1 for kw in SENSITIVE_KEYWORDS if kw in raw_url.lower())
+
+    # ── Weighted risk score ─────────────────────────────
+    score = 0.0
+    if flags["typosquat"]:
+        score += 0.55
+    if flags["homoglyph"]:
+        score += 0.60
+    if flags["brand_in_subdomain"]:
+        score += 0.50
+    if flags["punycode"] and flags["matched_brand"]:
+        score += 0.35
+    score += min(flags["keyword_count"] * 0.12, 0.36)
+    flags["risk_score"] = min(score, 0.99)
+
+    return flags
 
 # ────────────────────────────────────────────────────────
 # HELPERS
@@ -399,6 +609,45 @@ def predict():
             df_s = SCALER.transform(df)
             pred = MODEL.predict(df_s)[0]
             prob = MODEL.predict_proba(df_s)[0]
+
+        label = "Phishing" if int(pred) == 1 else "Legitimate"
+        print(f"[ML MODEL] {label}  "
+              f"phish={prob[1]:.3f}  legit={prob[0]:.3f}")
+
+        # ── Brand-impersonation risk blend ───────────────
+        # Runs independently of the ML model, which has no
+        # visibility into brand names, leetspeak, or homoglyphs.
+        domain_for_check = urlparse(
+            raw_url if raw_url.startswith(("http://", "https://"))
+            else "http://" + raw_url
+        ).netloc.split(":")[0]
+
+        bi = brand_impersonation_check(raw_url, domain_for_check)
+        prob = list(prob)
+
+        if bi["risk_score"] > 0:
+            # Blend: final phishing prob is whichever is higher of the
+            # ML model's own estimate and the rule-based risk score,
+            # rather than always slamming to a fixed 97%. This keeps
+            # low-confidence signals (e.g. 2 keywords alone) graded,
+            # while strong matches (typosquat/homoglyph/lookalike
+            # domain) still push the result decisively to "Phishing".
+            prob[1] = max(prob[1], bi["risk_score"])
+            prob[0] = 1 - prob[1]
+            pred = 1 if prob[1] >= 0.5 else pred
+
+            reasons = []
+            if bi["typosquat"]:
+                reasons.append(f"typosquat of '{bi['matched_brand']}'")
+            if bi["homoglyph"]:
+                reasons.append(f"homoglyph/visual trick mimicking '{bi['matched_brand']}'")
+            if bi["brand_in_subdomain"]:
+                reasons.append(f"'{bi['matched_brand']}' used outside its real domain")
+            if bi["punycode"]:
+                reasons.append("punycode/IDN-encoded domain")
+            if bi["keyword_count"] >= 2:
+                reasons.append(f"{bi['keyword_count']} sensitive keywords")
+            print(f"[RISK LAYER] score={bi['risk_score']:.2f} — " + "; ".join(reasons))
 
         label = "Phishing" if int(pred) == 1 else "Legitimate"
         print(f"[RESULT] {label}  "
