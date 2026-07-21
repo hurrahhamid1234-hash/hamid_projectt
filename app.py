@@ -16,6 +16,20 @@ CRITICAL FIXES applied (verified against dataset):
 
 3. Random Forest uses RAW features (no scaling).
    Logistic Regression uses StandardScaler output.
+
+4. RISK-LAYER FIXES (this revision):
+   - '@' / '\' in the domain is now flagged directly
+     (classic userinfo/host-spoofing trick, e.g.
+     "bankdetails\otp@evil.com" where the real host is
+     "evil.com", not "bankdetails\otp").
+   - New subdomain-stacking rule: 2+ sensitive keywords
+     each occupying their own subdomain label
+     (e.g. bank.verify.account.evil-domain.com) is now
+     flagged — this pattern is rare on legitimate sites.
+   - Keyword-density cap raised from 0.36 to 0.65. The old
+     cap made it mathematically impossible for keyword
+     density alone to ever cross a 0.5 classification
+     threshold, no matter how keyword-stuffed the URL was.
 ============================================================
 """
 
@@ -72,31 +86,6 @@ URL_SHORTENERS = {
     "lnkd.in","rb.gy","cutt.ly","shorturl.at","tiny.cc",
     "qr.ae","bc.vc","snipurl.com","ff.im","twit.ac","x.co",
 }
-
-# ── Brand-impersonation / typosquat detection ─────────────
-# The trained ML model only ever saw lexical counts + network
-# stats — it was never given the URL text itself, so it has
-# no way to recognise "g00gle.com" or "paypal-login-secure.net"
-# as impersonation attempts. This layer catches that class of
-# attack independently and overrides the model when it fires.
-
-BRANDS = [
-    "google","paypal","amazon","microsoft","apple","facebook",
-    "instagram","netflix","bankofamerica","wellsfargo","chase",
-    "citibank","hsbc","linkedin","ebay","twitter","whatsapp",
-    "dropbox","adobe","yahoo","outlook","icloud","gmail",
-]
-
-SENSITIVE_KEYWORDS = [
-    "login","signin","sign-in","secure","security","account",
-    "verify","verification","update","confirm","password",
-    "wallet","billing","bank","pay","credential","suspend",
-]
-
-LEET_MAP = str.maketrans({
-    "0": "o", "1": "l", "!": "i", "3": "e",
-    "4": "a", "5": "s", "7": "t", "$": "s", "@": "a",
-})
 
 # ── Brand-impersonation / typosquat detection ─────────────
 # The trained ML model only ever saw lexical counts + network
@@ -207,13 +196,17 @@ def _decode_punycode_domain(dom_lower):
 def brand_impersonation_check(raw_url, domain):
     """
     Returns a risk assessment dict:
-      typosquat           -> leetspeak/near-miss of a known brand
-      homoglyph            -> visual-trick or unicode/punycode lookalike
-      brand_in_subdomain  -> brand present in URL but not the real root
-      punycode             -> domain uses IDN/punycode encoding (xn--)
-      keyword_count        -> count of sensitive words in the URL
-      matched_brand         -> which brand it resembles, if any
-      risk_score            -> 0.0-1.0 weighted combination of the above
+      typosquat                  -> leetspeak/near-miss of a known brand
+      homoglyph                  -> visual-trick or unicode/punycode lookalike
+      brand_in_subdomain         -> brand present in URL but not the real root
+      punycode                   -> domain uses IDN/punycode encoding (xn--)
+      keyword_count               -> count of sensitive words in the URL
+      keyword_stacked_subdomains  -> 2+ sensitive keywords each as their own
+                                      subdomain label (e.g. bank.verify.account.*)
+      credential_char_abuse       -> '@' or '\' present in the domain
+                                      (userinfo/host-spoofing trick)
+      matched_brand                -> which brand it resembles, if any
+      risk_score                    -> 0.0-1.0 weighted combination of the above
     """
     flags = {
         "typosquat": False,
@@ -221,11 +214,21 @@ def brand_impersonation_check(raw_url, domain):
         "brand_in_subdomain": False,
         "punycode": False,
         "keyword_count": 0,
+        "keyword_stacked_subdomains": False,
+        "credential_char_abuse": False,
         "matched_brand": None,
         "risk_score": 0.0,
     }
 
     dom_lower = domain.lower()
+
+    # ── '@' / '\' host-spoofing check ───────────────────────
+    # A literal '@' or '\' in the domain text is almost never
+    # legitimate. Browsers treat everything before '@' as userinfo,
+    # so "bankdetails\otp@evil.com" LOOKS like the host is
+    # "bankdetails\otp" but the real host is "evil.com".
+    if "@" in domain or "\\" in domain:
+        flags["credential_char_abuse"] = True
 
     if "xn--" in dom_lower:
         flags["punycode"] = True
@@ -237,6 +240,10 @@ def brand_impersonation_check(raw_url, domain):
     # A domain is only "the real thing" if its actual root label is the
     # brand itself (any TLD: .com, .co.uk, .de, ...) — TLD doesn't matter.
     if main_label in BRANDS:
+        # Even a "legit" root label doesn't excuse @ / \ abuse — that
+        # means the "root" we parsed isn't the real browser-resolved host.
+        if flags["credential_char_abuse"]:
+            flags["risk_score"] = 0.55
         return flags  # legitimate root domain (e.g. google.co.uk) — skip entirely
 
     unicode_trick = _has_non_ascii(domain) or flags["punycode"]
@@ -267,6 +274,22 @@ def brand_impersonation_check(raw_url, domain):
     flags["keyword_count"] = sum(
         1 for kw in SENSITIVE_KEYWORDS if kw in raw_url.lower())
 
+    # ── Subdomain-stacking check ─────────────────────────────
+    # Flags URLs that stuff multiple trust keywords into their own
+    # subdomain labels, e.g. bank.verify.account.evil-domain.com.
+    # Real sites rarely chain "verify" and "account" as separate
+    # subdomain labels — phishing sites do it because it reads as
+    # reassuring to a skimming human eye.
+    labels = dom_lower.split(".")
+    subdomain_labels = labels[:-2] if len(labels) > 2 else []
+    stacked_hits = sum(
+        1 for label in subdomain_labels
+        if label in SENSITIVE_KEYWORDS
+        or any(kw in label for kw in SENSITIVE_KEYWORDS)
+    )
+    if stacked_hits >= 2:
+        flags["keyword_stacked_subdomains"] = True
+
     # ── Weighted risk score ─────────────────────────────
     score = 0.0
     if flags["typosquat"]:
@@ -277,7 +300,15 @@ def brand_impersonation_check(raw_url, domain):
         score += 0.50
     if flags["punycode"] and flags["matched_brand"]:
         score += 0.35
-    score += min(flags["keyword_count"] * 0.12, 0.36)
+    if flags["credential_char_abuse"]:
+        score += 0.55
+    if flags["keyword_stacked_subdomains"]:
+        score += 0.45
+    # Keyword score: cap raised 0.36 -> 0.65. The old cap made it
+    # mathematically impossible for keyword density alone to ever
+    # cross a 0.5 classification threshold, no matter how stuffed
+    # the URL was.
+    score += min(flags["keyword_count"] * 0.15, 0.65)
     flags["risk_score"] = min(score, 0.99)
 
     return flags
@@ -631,7 +662,8 @@ def predict():
             # rather than always slamming to a fixed 97%. This keeps
             # low-confidence signals (e.g. 2 keywords alone) graded,
             # while strong matches (typosquat/homoglyph/lookalike
-            # domain) still push the result decisively to "Phishing".
+            # domain/host-spoofing) still push the result decisively
+            # to "Phishing".
             prob[1] = max(prob[1], bi["risk_score"])
             prob[0] = 1 - prob[1]
             pred = 1 if prob[1] >= 0.5 else pred
@@ -645,6 +677,10 @@ def predict():
                 reasons.append(f"'{bi['matched_brand']}' used outside its real domain")
             if bi["punycode"]:
                 reasons.append("punycode/IDN-encoded domain")
+            if bi["credential_char_abuse"]:
+                reasons.append("'@' or '\\' abuse in domain (host-spoofing attempt)")
+            if bi["keyword_stacked_subdomains"]:
+                reasons.append("sensitive keywords stacked as separate subdomains")
             if bi["keyword_count"] >= 2:
                 reasons.append(f"{bi['keyword_count']} sensitive keywords")
             print(f"[RISK LAYER] score={bi['risk_score']:.2f} — " + "; ".join(reasons))
