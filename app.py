@@ -1,38 +1,4 @@
 
-"""
-============================================================
-Phishing Website Detection — Flask App
-
-CRITICAL FIXES applied (verified against dataset):
-
-1. -1 convention matches training data exactly:
-   - No directory/file in URL  → all directory & file features = -1
-   - No query string in URL    → all params features = -1
-   - Network lookup failed     → use legit-site median (NOT -1)
-
-2. Network fallback values = median of legitimate-only rows
-   (excluding -1 entries) from the training dataset.
-   This prevents sites like google.com being misclassified.
-
-3. Random Forest uses RAW features (no scaling).
-   Logistic Regression uses StandardScaler output.
-
-4. RISK-LAYER FIXES (this revision):
-   - '@' / '\' in the domain is now flagged directly
-     (classic userinfo/host-spoofing trick, e.g.
-     "bankdetails\otp@evil.com" where the real host is
-     "evil.com", not "bankdetails\otp").
-   - New subdomain-stacking rule: 2+ sensitive keywords
-     each occupying their own subdomain label
-     (e.g. bank.verify.account.evil-domain.com) is now
-     flagged — this pattern is rare on legitimate sites.
-   - Keyword-density cap raised from 0.36 to 0.65. The old
-     cap made it mathematically impossible for keyword
-     density alone to ever cross a 0.5 classification
-     threshold, no matter how keyword-stuffed the URL was.
-============================================================
-"""
-
 import re
 import ssl
 import socket

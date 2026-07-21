@@ -1,15 +1,4 @@
 
-"""
-============================================================
-Phishing Website Detection — Training Script
-Dataset : 58,645 rows | 111 features | target: phishing
--1 convention:
-  directory/file features = -1 when URL has no path
-  params features         = -1 when URL has no query string
-  network features        = -1 when lookup failed
-============================================================
-"""
-
 import os
 import joblib
 import pandas as pd
